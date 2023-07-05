@@ -1,0 +1,659 @@
+---
+title: "Astroestadística"
+output: html_document
+author: José Eduardo Reyes Alvarado
+date: "16-Junio-2023"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Proyecto de Ciencia de Datos (Fase 3)
+
+Importamos nuestros datos
+
+```{r}
+datos_sl <- rio::import("AirQualityUCI.xlsx") 
+```
+
+
+Realizo el mismo tratamiento de los nombres de las columnas que hicce en la Fase 2. Además, he decidido en esta ocasión dejar la columna correspondiente a las lecturas de Benceno de la estación de referencia para verificar si es posible estimar la cantidad de esta sustancia presente en la atmósfera a partir de las concentraciones del resto de sustancias.
+
+
+```{r}
+datos_sl <- datos_sl[, c(4, 3, 7, 5, 9, 8, 11, 10, 6)]
+colnames(datos_sl) <- c("CO", "CO_r", "NMHC", "NMHC_r", "NOx", "NOx_r", "NO2", "NO2_r", "Benceno")
+```
+
+
+Los registros faltantes están indicados con el valor -200. Voy a reemplazarlos con NA para poder hacer un análisis más detallado. 
+
+
+```{r}
+#install packages(naniar)
+library(naniar)
+datos_sp <- datos_sl
+datos_sp[datos_sp == -200] <- NA
+vis_miss(datos_sp)
+```
+
+Como podemos ver, la columna perteneciente a los Hidrocarburos No Metánicos de referencia tienen una importante cantidad de datos faltantes, por lo que voy a eliminarla. Además, al eliminar esta columna, también quitaré los datos del sensor, pues en el análisis que haré más adelante pierde sentido contar únicamente con los datos del sensor. 
+
+```{r}
+datos_sp <- datos_sp[, -c(3, 4)]
+vis_miss(datos_sp)
+```
+
+Ahora verificamos cuantos datos perderíamos si quitamos los valores faltantes. 
+
+```{r}
+datos_sp_1 <- na.omit(datos_sp)
+```
+
+Con esto elimino el 25.82% de los datos, por lo que se cumple el requisito de no eliminar más del 30% de los datos.
+
+```{r}
+vis_miss(datos_sp_1)
+```
+
+La gráfica anterior nos muestra que, efectivamente, ya no tenemos datos faltantes. 
+
+Ahora analizamos la distribución de los datos para todas las columnas. 
+
+Verifiquemos que tanto se parecen los datos a una distribución normal con ayuda de la función qqnorm
+
+
+```{r}
+for (columna in colnames(datos_sp_1)){
+  qqnorm(datos_sp_1[[columna]], main = columna)
+  qqline(datos_sp_1[[columna]])
+}
+```
+
+Como podemos ver, las datos de las columnas de NO2 y NO2_r son los que más se parecen a una distribución normal. Por otro lado, los de CO, NOx y Benceno son variables problemáticas. 
+
+En principio, podríamos proponer que estos datos problemáticos se distribuyen como una distribución Gamma, pues esta permite modelar acumulaciones de una cantidad durante un intervalo de tiempo y, en este caso, los registros corresponden a los promedios de una sustancia por hora. Usaremos los métodos visto en clase para comprobarlo. Vamos a definir unas funciones que estaremos mandando a llamar para cada variable. 
+
+Para generar la gráfica de Cullen & Frey
+
+```{r}
+library(fitdistrplus)
+cullenfrey <- function(x){
+  descdist(datos_sp_1[[x]], graph = TRUE)
+}
+
+```
+
+Y para calcular el AIC para ditintas funciones distribución de probabilidad. 
+En particular, nos enfocaremos en las que vimos en clase y que podemos comparar con el gráfico de Cullen & Frey. 
+
+```{r}
+library(dplyr)
+library(tibble)
+library(univariateML)
+
+calcular_aic <- function(x){
+
+y <- datos_sp_1[[x]]
+
+comparacion_aic <- AIC(
+mlbetapr(y),
+mlexp(y),
+mlgamma(y),
+mlunif(y), 
+mlnorm(y), 
+mllnorm(y)
+)
+comparacion_aic %>% rownames_to_column(var = "distribucion") %>%
+arrange(AIC)
+}
+
+```
+
+
+### Estimación para CO
+
+Primero para los valores del sensor
+
+```{r}
+cullenfrey("CO")
+calcular_aic("CO")
+```
+
+Podemos ver que el método gráfico parece favorecer a una distribución gamma o beta, y al calcular el AIC obtenemos que de hecho la distribución que más se ajusta es una beta. 
+
+Vamos a estimar los parámetros con ayuda de la función fitdistr
+
+```{r}
+# Primero escalamos los datos para que estén en el rango [0,1], que son los permitidos para una distribución beta.
+datos_escalados <- (datos_sp_1$CO - min(datos_sp_1$CO) + 0.001) / (max(datos_sp_1$CO) - min(datos_sp_1$CO) + 0.002)
+
+# Ahora hacemos la estimación con la función fitdist para encontrar los parámetros alpha y beta
+ajustar <- fitdist(datos_escalados, distr = "beta", method = "mle")
+alpha <- ajustar$estimate["shape1"]
+beta <- ajustar$estimate["shape2"]
+print(paste("alpha: ", alpha, "beta:", beta))
+
+
+# Generamos los valores de x donde vamos a graficar la función de distribución
+x <- seq(min(datos_escalados), max(datos_escalados), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada
+densidad <- dbeta(x, shape1 = alpha, shape2 = beta)
+
+# Creamos el histograma
+hist(datos_escalados, freq = FALSE, xlab = "CO", ylab = "Densidad", main = "Histograma para CO")
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "blue", lwd = 2)
+
+
+```
+
+
+
+
+Y ahora para los datos de referencia
+
+```{r}
+cullenfrey("CO_r")
+calcular_aic("CO_r")
+```
+
+Como podemos ver en la gráfica, parece ser que efectivamente la distribución Gamma es la más cercana, lo cual es confirmado al calcular el AIC. 
+
+Hacemos ahora la estimación:
+
+```{r}
+# Ajustamos la distribución gamma a los datos y estimamos los parámetros
+ajustar <- fitdist(datos_sp_1$CO_r, distr = "gamma", method = "mle")
+alpha <- ajustar$estimate["shape"]
+beta <- ajustar$estimate["rate"]
+print(paste("alpha: ", alpha, "beta:", beta))
+
+
+# Generamos secuencia de valores de x
+x <- seq(0, max(datos_sp_1$CO_r), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada
+densidad <- dgamma(x, shape = alpha, rate = beta)
+
+# Gráfica vacía lo suficientemente grande para contener las gráficas
+plot(0, 0, type = "n", xlim = range(datos_sp_1$CO_r), ylim = c(0, max(densidad) * 1.1), xlab = "CO_r", ylab = "Densidad", main="Histograma para CO (referencia)")
+
+# Generamos el histograma
+hist(datos_sp_1$CO_r, freq = FALSE, add=TRUE)
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "blue", lwd = 2)
+
+```
+
+
+
+### Estimación para NOx
+
+Datos de la estación:
+
+```{r}
+cullenfrey("NOx")
+calcular_aic("NOx")
+```
+
+El método gráfico parece sugerir en este caso una cercanía a la distribución lognormal, lo que se confirma al calcular el AIC. Procedemos a estimar los parámetros. 
+
+```{r}
+# Ajustamos la distribución lognormal a los datos y estimamos los parámetros
+ajustar <- fitdist(datos_sp_1$NOx, distr = "lnorm", method = "mle")
+medialog <- ajustar$estimate["meanlog"]
+desviacionlog <- ajustar$estimate["sdlog"]
+print(paste("medialog: ", medialog, "sdlog:", desviacionlog))
+
+# Generamos secuencia de valores de x
+x <- seq(min(datos_sp_1$NOx), max(datos_sp_1$NOx), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada con los parámetros que encontramos
+densidad <- dlnorm(x, meanlog = medialog, sdlog = desviacionlog)
+
+# Gráfica vacía lo suficientemente grande para contener las gráficas
+plot(0, 0, type = "n", xlim = range(datos_sp_1$NOx), ylim = c(0, max(densidad) * 1.1), xlab = "NOx", ylab = "Densidad", main="Histograma para NOx")
+
+# Trazamos el histograma
+hist(datos_sp_1$NOx, freq = FALSE, add=TRUE)
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "red", lwd = 2)
+
+```
+
+
+
+Para los datos de referencia:
+
+```{r}
+cullenfrey("NOx_r")
+calcular_aic("NOx_r")
+
+```
+
+La gráfica parece indicar una cercanía a la distribución beta o gamma. Al calcular el AIC, vemos que de hecho la distribución con el menor AIC es una lognormal. Recordemos que el métodose la gráfica de Callen & Frey no es el más confiable, pues acarrea los problemas inherentes a la asimetría y curtosis que se vieron en clase. Vamos a estimar los parámetros para una distribución de tipo normal 
+
+```{r}
+# Ajustamos la distribución lognormal a los datos y estimamos los parámetros
+ajustar <- fitdist(datos_sp_1$NOx_r, distr = "lnorm", method = "mle")
+medialog <- ajustar$estimate["meanlog"]
+desviacionlog <- ajustar$estimate["sdlog"]
+print(paste("medialog: ", medialog, "sdlog:", desviacionlog))
+
+# Generamos secuencia de valores de x
+x <- seq(min(datos_sp_1$NOx_r), max(datos_sp_1$NOx_r), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada
+densidad <- dlnorm(x, meanlog = medialog, sdlog = desviacionlog)
+
+# Gráfica vacía lo suficientemente grande para contener las gráficas
+plot(0, 0, type = "n", xlim = range(datos_sp_1$NOx_r), ylim = c(0, max(densidad) * 1.1), xlab = "NOx_r", ylab = "Densidad", main="Histograma para NOx (referencia)")
+
+# Trazamos el histograma
+hist(datos_sp_1$NOx_r, freq = FALSE, add = TRUE)
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "red", lwd = 2)
+
+```
+
+
+
+
+### Estimación para NO2
+
+Para los datos de la estación:
+
+```{r}
+cullenfrey("NO2")
+calcular_aic("NO2")
+
+```
+
+Tal y como lo supusimos desde la Fase 2, estos datos son los más cercanos a una distribución normal, lo que confirmamos tanto con el método gráfico como con el cálculo del AIC. Vamos a estimar los parámetros de la normal. 
+
+```{r}
+# Ajustamos la distribución normal a los datos u estimamos los parámetros
+ajustar <- fitdist(datos_sp_1$NO2, distr = "norm", method = "mle")
+media <- ajustar$estimate["mean"]
+desviacion <- ajustar$estimate["sd"]
+print(paste("media: ", media, "sd:", desviacion))
+# Generamos secuencia de valores de x
+x <- seq(min(datos_sp_1$NO2), max(datos_sp_1$NO2), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada
+densidad <- dnorm(x, mean = media, sd = desviacion)
+
+# Trazamos el histograma
+hist(datos_sp_1$NO2, freq = FALSE, main = "Histograma para NO2", xlab = "NO2", ylab = "Densidad")
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "yellow", lwd = 2)
+
+```
+
+
+
+Y para los datos de referencia: 
+
+```{r}
+cullenfrey("NO2_r")
+calcular_aic("NO2_r")
+```
+
+En este caso los datos se aproximan más a una distribución gamma que a una normal. Vamos a estimar sus parámetros. 
+
+```{r}
+# Ajustamos la distribución gamma a los datos
+ajustar <- fitdist(datos_sp_1$NO2_r, distr = "gamma", method = "mle")
+alpha <- ajustar$estimate["shape"]
+beta <- ajustar$estimate["rate"]
+print(paste("alpha: ", alpha, "beta:", beta))
+# Generamos secuencia de valores de x
+x <- seq(0, max(datos_sp_1$NO2_r), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada
+densidad <- dgamma(x, shape = alpha, rate = beta)
+
+# Generamos el histograma
+hist(datos_sp_1$NO2_r, freq = FALSE, main = "Histograma para NO2 (referecia)", xlab = "NO2_r", ylab = "Densidad")
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "yellow", lwd = 2)
+
+```
+
+
+### Estimación para Benceno 
+
+```{r}
+cullenfrey("Benceno")
+calcular_aic("Benceno")
+```
+
+El método gráfico parece ajustarse muy bien a una distribución gamma, lo que se confirma con el cálculo del AIC. Vamos a estimar sus parámetros. 
+
+```{r}
+# Ajustamos la distribución gamma a los datos
+ajustar <- fitdist(datos_sp_1$Benceno, distr = "gamma", method = "mle")
+alpha <- ajustar$estimate["shape"]
+beta <- ajustar$estimate["rate"]
+print(paste("alpha: ", alpha, "beta:", beta))
+# Generamos secuencia de valores de x
+x <- seq(0, max(datos_sp_1$Benceno), length.out = 100)
+
+# Calculamos la función densidad de probabilidad estimada
+densidad <- dgamma(x, shape = alpha, rate = beta)
+
+# Gráfica vacía lo suficientemente grande para contener las gráficas
+plot(0, 0, type = "n", xlim = range(datos_sp_1$Benceno), ylim = c(0, max(densidad) * 1.1), xlab = "Benceno", ylab = "Densidad", main="Histograma para Benceno")
+
+
+# Generamos el histograma
+hist(datos_sp_1$Benceno, freq = FALSE, add=TRUE,)
+
+# Trazamos la curva de ajuste
+lines(x, densidad, col = "purple", lwd = 2, add=TRUE)
+
+```
+
+
+Finalmente, vamos a aplicar el método Box Cox para intentar transformar las variables para que tengan una distribución normal. 
+
+Vamos a almacenar las columnas que vamos a usar como variables independientes. Únicamente lo haremos con los datos de referencia del dataset, pues son los que utilizaremos más adelante.
+
+```{r}
+v_CO <- datos_sp_1$CO_r
+v_NOx <- datos_sp_1$NOx_r
+v_NO2 <- datos_sp_1$NO2_r
+v_benceno <- datos_sp_1$Benceno
+```
+
+Veamos los histogramas de nuestros datos originales antes de ser transformados. 
+
+```{r}
+par(mfrow = c(2, 2))
+hist(v_CO)
+hist(v_NOx)
+hist(v_NO2)
+hist(v_benceno)
+```
+
+
+Calculamos los lambdas para cada variable
+
+```{r}
+
+library(forecast)
+
+lambda_benceno = BoxCox.lambda(v_benceno,method="loglik",lower=-20,upper=20)
+lambda_co = BoxCox.lambda(v_CO,method="loglik",lower=-20,upper=20)
+lambda_nox = BoxCox.lambda(v_NOx,method="loglik",lower=-20,upper=20)
+lambda_no2 = BoxCox.lambda(v_NO2,method="loglik",lower=-20,upper=20)
+
+```
+
+
+Aplicamos las transformaciones y mostramos los nuevos histogramas. 
+
+```{r}
+trans.benceno = BoxCox(v_benceno, lambda_benceno)
+trans.co = BoxCox(v_CO, lambda_co)
+trans.nox = BoxCox(v_NOx, lambda_nox)
+trans.no2 = BoxCox(v_NO2, lambda_no2)
+
+par(mfrow = c(2, 2))
+hist(trans.benceno, main = paste("Hist. Benceno para λ = ", lambda_benceno))
+hist(trans.co, main = paste("Hist. CO para λ = ", lambda_co))
+hist(trans.nox, main = paste("Hist. NOx para λ = ", lambda_nox))
+hist(trans.no2, main = paste("Hist. NO2 para λ = ", lambda_no2))
+
+```
+
+Nuestras variables de interés ya se parecen más a una distribución normal. Vamos a verificarlo nuevamente con ayuda de la función qqnorm
+
+```{r}
+par(mfrow = c(2, 2))
+qqnorm(trans.benceno, main = "Benceno")
+qqline(trans.benceno)
+qqnorm(trans.co, main = "CO")
+qqline(trans.co)
+qqnorm(trans.nox, main = "NOx")
+qqline(trans.nox)
+qqnorm(trans.no2, main = "NO2")
+qqline(trans.no2)
+```
+
+Nuevamente, estamos obteniendo evidencia gráfica favorable de que nuestros datos transformados ya siguen una distribución normal. 
+
+
+
+### Generación de agrupaciones
+
+Voy a separar los datos de acuerdo a la concentración de Óxidos de Nitrógeno en la atmósfera. Aquellos mayores de una cantitad "t" y los menores iguales a la misma cantidad. En este caso, "t" lo definimos como el promedio de NOx del conjunto de datos. 
+
+
+```{r}
+# Generamos un nuevo dataset con los datos ya transformados. 
+datos_norm <- data.frame(trans.co, trans.no2, trans.nox, trans.benceno)
+colnames(datos_norm) <- c("CO", "NO2", "NOx", "Benceno")
+
+# Definimos el valor de t
+t <- mean(datos_norm$NOx)
+
+# Generamos dos nuevos dataframes a partir de t. 
+datos_menorque <- datos_norm[datos_norm$NOx <= t, ]
+datos_mayorque <- datos_norm[datos_norm$NOx > t, ]
+
+```
+
+Intento verificar si es posible estimar la cantidad de Benceno en la atmósfera a partir de las concentraciones de NOx, NO2 y CO. Podemos enunciar la Hipótesis Nula de la siguiente manera. 
+
+"Las concentraciones de Benceno permanecen constantes para cualesquiera valores de NOx"
+
+Ahora necesitamos estimar un intervalo del 90% de confianza para comparar el promedio de la variable respuesta (Benceno) entre ambos grupos. 
+
+
+```{r}
+estimacion <- t.test(datos_mayorque$Benceno, datos_menorque$Benceno, alternative = "two.sided", conf.level = 0.9, var.equal = TRUE)
+print(estimacion$conf.int)
+```
+Es decir, con los datos disponibles podemos decir que la diferencia entre las medias para las concentraciones de Benceno no es igual a cero. 
+
+¿Qué suposiciones estamos haciendo? 
+Los datos que usamos son los que ya están transformados, por lo que siguen una distribución normal. Además, los datos son independientes. Después de todo, los registros son mediciones independientes de las concentraciones de Benceno en la estación de referencia. También estamos suponiendo que la varianza en los datos es la misma. 
+
+
+## Modelo de regresión lineal múltiple (Primer modelo)
+
+
+Hagamos una rápida inspección a las relaciones entre nuestros datos normalizados con ayuda de la función ggpairs de la librería GGally
+
+
+```{r}
+#install.packages(GGally)
+library(GGally)
+
+ggpairs(datos_norm)
+```
+
+Hay varias cosas importantes que podemos interpretar de aquí. 
+
+La variable que tiene mayor correlación con el Benceno es el CO, con un coeficiente de correlación de .912. De hecho, el Benceno parece guardar una alta correlación con todas las variables, siendo el menor coeficiente el .660 del N02, aque aún así sigue siendo de una magnitud importante. 
+
+Por otro lado, hay fuertes indicios de correlación entre todas las variables estimadoras, lo cuál podría llegar a ser problemático para nuestro modelo. Sin embargo, es un problema que parece ser inherente a la naturaleza de los datos. ¿Por qué? Porque las variables corresponden a sustancias contaminantes en el aire de una ciudad, por lo que no es raro el suponer que, en los días de mayor polución, las concentraciones de estos contaminantes sea mayor. No estamos haciendo un análisis de la evolución temporal de estas sustancias, sino que queremos estimar la concentración de una de ellas (el Benceno) a partir de las concentraciones de las otras. 
+
+
+Vamos a gener un primer modelo y estudiar su comportamiento. 
+
+
+### Primer modelo
+
+Tomaremos en cuenta todas las variables, es decir, CO, NOx y NO2 para intentar predecir el valor del Benceno.
+
+```{r}
+# Primer estimador lineal para el Benceno
+model.benceno1 <- lm(Benceno~CO+NOx+NO2, data = datos_norm)
+summary(model.benceno1)
+```
+
+Parece ser que, a pesar del problema de la colinealinad, tenemos un valor alto de R^2 de .8311, es decir, el modelo es capaz de explicar  el 83.11% de la variabilidad del Benceno. 
+
+Por otro lado, obtuvimos p-value: < 2.2e-16, lo que nos indica que hay una fuerte evidencia de que, al menos uno de los coficientes del modelo, no es cero. 
+
+El error estándar del modelo es de 0.5947. 
+
+Analicemos ahora los coeficientes y sus errores estándar:
+
+* Tanto para el intercepto como para el CO, existe una fuerte evidencia de que son estadísticamente significativos para las concentraciones de Benceno, pues la probabilidad de que tengan una relación nula con la variable respuesta es extremadamente baja (<2e-16)
+
+* En el caso del NOx, la probabilidad de que estos datos tengan una relación nula con la variable de respuesta, es del 8.23%, que es ligeramente superior al 5% que usualmente se busca.
+
+* Finalmente, el modelo indica que hay una alta probabilidad de que las concentraciones de NO2 no sean estadísticamente significativas para la variable de respuesta, específicamente del 98.49%  
+
+Veamos ahora los errores estándar de cada coeficiente. 
+
+```{r}
+coeficientes <- coef(model.benceno1)  # Coeficientes estimados
+std_errors <- sqrt(diag(vcov(model.benceno1)))  # Errores estándar
+
+# Cálculo de los errores porcentuales
+errores_porcentuales <- (std_errors / coeficientes) * 100
+
+mostrar_errores <- data.frame(coeficientes, std_errors, errores_porcentuales, check.names = TRUE)
+print(mostrar_errores)
+```
+
+Los errores porcentuales para CO y el Intercepto son relativamente bajos. El coeficiente par NOx tiene un error porcentual importante, del 57.55%. Finalmente, el error porcentual para el coeficiente de NO2 es altísimo, lo que apunta aún más evidencia a que sería mejor retirarlo del modelo. 
+
+En el caso del coeficiente de NOx, a pesar del error en el coeficiente, no es recomendable retirarlo, pues de hacerlo el modelo dejaría de ser multivariado. Más aún, tomando en cuenta el análisis que hicimos sobre su error estándar y la baja probabilidad de una relación nula con la variable de respuesta, parecería recomendable mantenerlo modelo final. 
+
+
+En términos de una expresión matemática, la ecuación del modelo sería: 
+
+\[ B = 1.880 + 1.616 CO + 0.0139NOx + 0.00004387NO2 \]
+
+Donde:
+
+- \(1.880\) es el intercepto
+- \( CO \), \( NOx \) y \(NO2\) representan los valores de las variables independientes.
+- \(B\) es la variable de respueta, que corresponde a la estimación de la concentración de Benceno. 
+
+### Diagnóstico del modelo mediante gráficas
+
+Comenzamos generando las gráficas con ayuda de la función plot
+
+```{r}
+plot(model.benceno1)
+```
+
+
+* En primer gráfica buscamos que los puntos estén distribuidos de forma aleatoria, lo cuál no se cumple pues esiste una patrón distinguible en la dispersión de los puntos. 
+
+* En la segunda gráfica queremos comprobar que los residuos siguen una distribución normal. Lo cuál se cumple para la mayoría de los casos, a excepción de los valores extremos. 
+
+* En la tercera queremos que los puntos estén aleatoriamente disstribuidos y la linea roja sea lo más horizotal posible. Si bien la línea roja empieza como una curva que va decayendo, poco a poco se va haciendo más horizontal en el extremo derecho.
+
+* En la cuarta gráfica buscamos que todos los residuos se encuentren dentro de la distancia de Cook, lo cuál efectivamente ocurre. 
+
+
+Como podemos ver, este primer modelo tiene varias oportunidades de mejora, a pesar del alto valor de \(R^2\) que obtuvimos. 
+
+
+## Modelo de Regresión Final
+
+Como primer paso, voy a eliminar la variable NO2, de acuerdo al análisis previo que hicimos sobre la misma. 
+
+```{r}
+model.benceno2 <- lm(Benceno~CO+NOx, data = datos_norm)
+summary(model.benceno2)
+```
+Como podemos ver, al retirar la variable NOx, el valor de Pr(>|t|) para NOx bajó, por lo que ahora el coeficiente de esta variable es estadísticamente más relevante, pues  la probabilidad de que estos datos tengan una relación nula con la variable de respuesta, es sólo del **2.39%**. El error estándar del modelo bajó muy poco, de 0.5947 a 0.5946. Y en el caso de la \(R^2\) subió de 0.8311 a 0.8312; en el caso de la significancia estadística de los coeficientes para CO y el Intersecto, no hubo cambios.
+
+Veamos ahora si mejoraron los gráficos de diagnóstico del modelo. 
+
+```{r}
+plot(model.benceno2)
+```
+
+Los gráficos son aparentemente idénticos a los del primer modelo. 
+
+Veamos si podemos refinar un poco más el modelo mediante el análisis de valores atípicos o influyentes. 
+
+Generamos el diagrama de caja y brazos para los datos. 
+
+```{r}
+boxplot.matrix(as.matrix(datos_norm),use.cols = T)
+```
+
+Como podemos ver, si existen unos cuantos valores atípicos en nuestros datos (recordemos que en este punto sólo nos interesan los que corresponden a CO y NOx).
+
+Identificamos los outliers con ayuda de la función outlierTest
+
+```{r}
+library(car)
+atipicos <- outlierTest(model.benceno2)
+renglones_atipicos <- as.integer(names(atipicos$rstudent))
+print(atipicos)
+```
+Creamos el nuevo dataframe quitando lo datos atípicos
+(En este paso iteré varias veces eliminando combinaciones de los datos atípicos, hasta que encontré una que mejoró levemente los parámetros del modelo)
+
+```{r}
+
+# Número de renglones a remover 
+datos_norm_2 <- datos_norm[-c(2638, 2639, 2640), ]
+
+model.benceno3 <- lm(Benceno~CO+NOx, data = datos_norm_2)
+summary(model.benceno3)
+
+```
+Cómo podemos ver, nuestro \(R^2\) subió de 0.8312 a 0.834. El valor de Pr(>|t|) subió un poco de 0.0239 a 0.0479, pero logramos mantenerlo por debajo de 0.05. 
+
+El error estándar del modelo bajó un poco, de 0.5946 a 0.5897. 
+
+Veamos lo que ocurrió con los coeficientes y sus errores. 
+
+```{r}
+coeficientes <- coef(model.benceno3)  # Coeficientes estimados
+std_errors <- sqrt(diag(vcov(model.benceno3)))  # Errores estándar
+
+# Cálculo de los errores porcentuales
+errores_porcentuales <- (std_errors / coeficientes) * 100
+
+mostrar_errores <- data.frame(coeficientes, std_errors, errores_porcentuales, check.names = TRUE)
+print(mostrar_errores)
+```
+
+Los errores porcentuales para los coeficientes del Intercepto y de CO bajaron un poco, del 2.33% al 2.25% y de 0.90% a .87% respectivamente. La disminución en el error para el coeficiente de NOx fue más significativa, pues pasó de 57.55 a 50.54.  
+
+```{r}
+plot(model.benceno3)
+```
+
+El diagnóstico del modelo mediante las gráficas de la función plot no presenta cambios significativos respecto al modelo 2. 
+
+Para terminar esta parte, la ecuación del modelo final es:<font color=blue>
+
+#### \(B = 1.88731132  + 1.62482292CO + 0.01216435NOx\)
+</font>
+
+## Conclusiones
+
+Hemos verificado que es posible econtrar un modelo razonablemente preciso para estimar la concentración de Benceno en la atmósfera en términos de las concentraciones de CO y NOx. El modelo es capaz de explicar el **83.11** de variabilidad del Benceno. 
+
+¿Por qué es esto importante? 
+Como vimos desde la Fase 2 y podemos comprobar facilmente al explorar los datos originales, el dispositivo multisensorial NO cuenta con un sensor dedicado a medir las concentraciones de Benceno en la atmósfera, pero si tiene sensores para medir CO y NOx, por lo que podría realizar una estimación razonablemente confiable de la cantidad de Benceno a partir de estas mediciones.
+
+Una detalle importante que debemos tomar en cuenta es que tuvimos que eliminar las columnas de NMHC de referencia, pues la mayoría de los registros eran datos faltantes. 
+Quizá podríamos haber refinado aún más la precisión del modelo al incluir NMHC al conjunto de predictores. Una posibilidad para verificar esto usando los datos de este mismo dadaset es tomar en cuenta únicamente los registros para los primeros dos meses del experimento pues, tal y como vimos en la Fase 2, en este periodo sí contamos con registros para la estación de referencia. 
+
+Por otro lado, existe la posibilidad de que el comportamiento un tanto atípico de los registros de NO2 (que ya estudiamos en la Fase 2) puede haber influido en el hecho de que tuvimos que eliminar esta variable del modelo final. Nuevamente, queda la sugerencia de extender el análisis incluyendo las variables categóricas de tiempo que propuse en la Fase 2 y verificar si esto ayudaría a mejorar la precisión del modelo. 
+
