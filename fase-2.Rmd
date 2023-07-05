@@ -1,0 +1,562 @@
+---
+title: "Astroestadística"
+output: html_document
+date: "09-Mayo-2023"
+author: "José Eduardo Reyes Alvarado"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Proyecto de Ciencia de Datos
+
+Comenzamos importando los datos que vamos a utilizar con ayuda de la libreria rio
+
+```{r}
+datos_0 <- rio::import("AirQualityUCI.xlsx") 
+```
+
+Veamos qué variables tiene nuestro conjunto de datos.
+
+```{r}
+colnames(datos_0)
+```
+Un vistazo general a los datos mediante la función skimr.
+
+```{r}
+#install packages skimr
+skimr::skim(datos_0)
+```
+
+En este conjunto de datos contamos con 13 variables cuantitativas contínuas con escala de medición de razón: 
+
+```{r}
+datos_tipo_razon <- colnames(datos_0)[3: length(colnames(datos_0))]
+print(datos_tipo_razon)
+```
+
+Estas variables corresponden a las concentraciones de las sustancias indicadas medidas con el dispositivo multisensorial que se está evaluando y la estación de monitoreo de referencia. 
+
+
+Las otras 2 variables del dataframe, tienen escala de medición de tipo intervalo (las fechas y horas):
+```{r}
+datos_tipo_intervalo <- colnames(datos_0)[1:2]
+print(datos_tipo_intervalo)
+```
+
+
+Por practicidad, vamos a modificar los nombres de las columnas y el orden de las mismas de tal manera que las columnas que correspondan a la lectura de una misma sustancia queden contiguas. Para diferenciarlas, las lecturas del dispositivo multisensorial quedan indicadas con el nombre de la sustancia en cuestión, mientras que las lecturas de referencia se indican con "_r" al final. También eliminamos las variables que corresponden a las concentraciones de Ozono O3 y Benceno C6H6, pues no existe una relación directa entre ambas que podamos usar para el análisis que nos interesa.
+
+
+```{r}
+datos_0 <- datos_0[, c(1, 2, 4, 3, 7, 5, 9, 8, 11, 10, 13, 14, 15)]
+colnames(datos_0) <- c("Fecha", "Hora", "CO", "CO_r", "NMHC", "NMHC_r", "NOx", "NOx_r", "NO2", "NO2_r", "Temperatura", "Humedad_relativa", "Humedad_absoluta")
+```
+
+Los valores ausentes en el dataframe están indicados con -200. Como estamos hablando de acumulación de sustancias en el aire, no tiene sentido hablar de acumulaciones negativas, por lo que cambiaremos los datos faltantes por 0. 
+
+
+El principal objetivo del proyecto es evaluar el rendimiento del dispositivo multisensorial al medir las sustancias contaminantes. Para ello, realizaremos un análisis estadístico de los datos que se reportaron y los compararemos con lo que indicaron las lecturas de las mismas sustacias de la estación de referencia. 
+
+
+## Variables cuantitativas. 
+
+Vamos a definir algunas funciones que vamos a ocupar más adelante para el cálculo de las medidas de tendencia central. Comenzamos con el intervalo de clase, frecuencia absoluta y relativa: 
+
+```{r, warning=FALSE, message=FALSE}
+#Función que devuelve una tabla con el intervalo de clase, la frecuencia absoluta y la frecuencia relativa
+#install.packages("fdth")
+library(fdth)
+generar_tabla <- function(columna, n) {
+  datos_columna <- datos_1[[columna]][datos_1[[columna]] != 0]
+  tabla_frecuencias <- fdt(datos_columna, k = n, right = TRUE)
+  datos_filtrados <- tabla_frecuencias[[1]][, c(1, 2, 3, 6), drop = FALSE]
+  colnames(datos_filtrados) <- c("Int_de_clase", "F_absoluta", "F_relativa", "F_rel_acumulada(%)")
+  return(datos_filtrados)
+}
+```
+
+Para la clase modal:
+```{r}
+clase_modal <- function(tabla){
+  return(levels(tabla$Int_de_clase)[which.max(tabla$F_absoluta)]) 
+}
+```
+
+Para el promedio: 
+```{r}
+#Función que calcula el promedio sin tomar en cuenta los valores igual a cero. 
+calcular_promedio <- function(x){
+  return(mean(datos_1[[x]][datos_1[[x]] != 0]))
+}
+```
+
+Para los cuartiles:
+
+```{r}
+#Función que devuelve el primer, segundo y tercer cuartil 
+cuartiles <- function(x){
+  quantile(datos_1[[x]][datos_1[[x]] != 0], probs = c(0.25, 0.5, 0.75))
+}
+```
+
+Para el coeficiente de relación: 
+```{r}
+#Función que calcula el coeficiente de correlación entre dos columnas, pero sólo para registros en que los que ninguno de los valores sea cero. 
+coeficiente_corr <- function(x, y){
+  correlacion <- cor(datos_1[[x]][datos_1[[x]] != 0 & datos_1[[y]] != 0], datos_1[[y]][datos_1[[x]] != 0 & datos_1[[y]] != 0])
+  return(correlacion)
+}
+```
+
+Definidas estas funciones, analizaremos los datos para cada tipo de sustancia contaminante: 
+
+### Concentración de Monóxido de Carbono (CO) en la atmósfera. 
+
+```{r}
+#Para hacernos una idea del rango de valores
+rango_co <- range(datos_1$CO[datos_1$CO != 0])
+rango_co_r <- range(datos_1$CO_r[datos_1$CO_r != 0])
+tabla_co <- generar_tabla("CO", 7)
+tabla_co_r <- generar_tabla("CO_r", 7)
+#Mostramos los datos para el dispositivo multisensorial (también llamados datos del sensor de aquí en adelante)
+tabla_co
+#Mostramos los datos para las lecturas de referencia con el mismo número de intervalos de clase. 
+tabla_co_r
+```
+
+La distribución de los datos de referencia parece mostrar un sesgo hacia los primeros intervalos, pues los dos primeros ya contienen aproximadamente el 85% de los datos. En el caso de las lecturas del sensor, los datos se encuentran ligeramente más dispersos, pero aún existe cierto sesgo hacia los primeros intervalos de clase. Vamos a crear el histograma para poder visualizarlo mejor. 
+
+```{r}
+hist(datos_1$CO[datos_1$CO != 0], col="#a5d8e6", main="Concentración de CO en la atmósfera (sensor)", xlab = "CO", prob=F)
+hist(datos_1$CO_r[datos_1$CO_r != 0], col="#a5d8e6", main="Concentración de CO en la atmósfera (referencia)", xlab = "CO (mg/m^3)", prob=F)
+```
+
+Los histogramas nos permiten comprobar que ambas distribuciones son muy diferentes. Para empezar, las concentraciones difieren en tres ordenes de magnitud: Para los datos de la estación de monitoreo se encuentran en el orden de los miles y para los datos de referencia, no pasan de los 12. Ambos histogramas se encuentran sesgados hacia la derecha, pero los datos del sensor están un poco más dispersos. Hay un dato importante que vale la pena mencionar y que se repite en todas las columnas de la base de datos: En la descripción del conjunto de datos, se indican las unidades de los datos para la estación de referencia, pero no se especifican para el dispositivo multisensorial, por lo que no sabemos exactamente a qué unidades corresponden dichas lecturas ni qué relación entre ambas existe. Lo que haremos de aquí en adelante es intentar determinar, en caso de que exista, la relación entre las lecturas de cada sensor con lo reportado por la estación de referencia. En el caso que nos ocupa (concentraciones de CO), veamos que información nos da el coeficiente de correlación. 
+
+```{r}
+#Primero generamos la gráfica de dispersión para los datos del sensor vs el la estación de referencia. 
+plot(datos_1$CO_r[datos_1$CO != 0 & datos_1$CO_r != 0], datos_1$CO[datos_1$CO != 0 & datos_1$CO_r != 0], xlab = "Lecturas de referencia (mg/m^3)", ylab = "Lecturas del sensor (unidades desconocidas)", col = "#a5d8e6")
+#Calculamos el coeficiente de correlación. 
+print(coeficiente_corr("CO_r", "CO"))
+```
+
+
+Podemos ver que es posible establecer una relación lineal entre los datos de ambas columnas. Si bien no conocemos las unidades en las que el sensor realiza sus lecturas, podemos verificar que existe la posibilidad de calibrar o ajustar las mediciones a partir de lo reportado por la estación de referencia, con cierto margen de precisión. Esto es un buen indicador de que el comportamiento del sensor para CO funciona de manera correcta, pero habría que verificar exactamente con qué unidades trabaja. En general, va a ser muy importante que podamos establecer una relación entre los datos del sensor y los de referencia, no importa si esta es lineal o de cualquier otro tipo, pues mientras exista, podría indicar la posibilidad de que el sensor pueda ser *calibrado* para obtener lecturas con unidades consistentes o interpretables con respecto a la estación de referencia. 
+
+
+Vamos a mostrar las **medidas de tendecia central**: **clase modal**, **cuartiles (primero, segundo y tercero)** y **promedio**.
+```{r}
+#Para la clase modal
+moda_co <- clase_modal(tabla_co)
+moda_co_r <- clase_modal(tabla_co_r)
+print(paste("Clase modal del sensor: ", moda_co, "Clase modal de referencia: ", moda_co_r))
+
+```
+Para el dispositivo multisensorial la clase modal corresponde al segundo intervalo de clase, mientras que para la estación de referencia es el primero. 
+
+```{r}
+#Para el promedio
+promedio_co <- calcular_promedio("CO")
+promedio_co_r <- calcular_promedio("CO_r")
+print(paste("Promedio sensor: ", promedio_co, "Promedio referencia: ", promedio_co_r))
+
+```
+
+El promedio de la estación de referencia para concentración de Monóxido de Carbono en el aire es de 2.15 mg/m^3, mientras que para el sensor es de 1099.70 que, recordemos, tiene unidades desconocidas.  
+
+
+Mostramos los cuartiles y el diagrama de caja y brazos de las lecturas del sensor:
+```{r}
+quant_co <- cuartiles("CO")
+print(quant_co)
+boxplot(datos_1$CO[datos_1$CO != 0],horizontal=T,col="#a5d8e6", xlab = "CO ",main="Concentración de Monóxido de Carbono (sensor)")
+```
+
+El sensor reportó lecturas superior a las 1063 unidades en la mitad de los casos, con una importante concentración de valores atípicos superiores a las 1600 unidades. 
+
+Y para las lecturas de referencia:
+```{r}
+quant_co_r <- cuartiles("CO_r")
+print(quant_co_r)
+boxplot(datos_1$CO_r[datos_1$CO_r != 0],horizontal=T,col="#a5d8e6", xlab = "CO (mg/m^3) ",main="Concentración de Monóxido de carbono (referencia)")
+```
+
+En el 50% de los casos se registaron concentraciones de más de 1.8 mg/m^3 de CO en el aire. En ambos casos, la concentraciones más altas son mucho más dispersas. También es notable el hecho de que existen muchos valores atípicos muy altos, sobre los cuáles debería prestarse especial atención pues podrían ser un indicativo de un importante problema de la calidad del aire. 
+
+### Concentración de Hidrocarburos No-Metánicos (NMHC) en la atmósfera. 
+
+Veamos el rango de los valores y generamos la tabla de frecuencia. 
+```{r}
+rango_nmhc <- range(datos_1$"NMHC"[datos_0$"NMHC" != 0])
+rango_nmhc_r <- range(datos_1$"NMHC_r"[datos_0$"NMHC_r" != 0])
+tabla_nmhc <- generar_tabla("NMHC", 17)
+tabla_nmhc_r <- generar_tabla("NMHC_r", 12)
+#Datos del sensor
+tabla_nmhc
+#Datos de referencia
+tabla_nmhc_r
+```
+
+```{r}
+#Para mostrar los histogramas
+hist(datos_1$NMHC[datos_1$NMHC != 0], col="#b2d8b2", main="Concentración de NMHC en la atmósfera (sensor)", xlab = "NMHC", prob=F)
+```
+
+Vemos que el histograma en este caso tiene una distribución sesgada hacia la derecha, siendo los más densos aquellos que se encuentran por debajo de las 1000 unidades (reitero en que son unidades desconocidas)
+
+```{r}
+hist(datos_1$NMHC_r[datos_1$NMHC_r != 0], col="#b2d8b2", main="Concentración de NMHC en la atmósfera (referencia)", xlab = "NMHC (µg/m^3)", prob=F)
+```
+
+La distribución para los valores de referencia es totalmente diferente, pues la mayoría de los registros se encuentran entre 0 y 100 µg/m^3 y va disminuyendo para valores superiores. 
+
+Veamos si existe una relación entre las lecturas del sensor y las de la estación de referencia. 
+
+Coeficiente de correlación: 
+
+```{r}
+#Generamos la gráfica de dispersión para los datos del sensor vs el la estación de referencia. 
+plot(datos_1$NMHC_r[datos_1$NMHC != 0 & datos_1$NMHC_r != 0], datos_1$NMHC[datos_1$NMHC != 0 & datos_1$NMHC_r != 0], xlab = "Lecturas de referencia (µg/m^3)", ylab = "Lecturas del sensor (unidades desconocidas)", col = "#b2d8b2")
+#Calculamos el coeficiente de correlación. 
+print(coeficiente_corr("NMHC_r", "NMHC"))
+```
+
+En este caso podemos notar que la relación entre las lecturas del sensor y las de la estación de referencia no es lineal. En realidad, la gráfica de dispersión parece indicar que existe una relación logarítmica entre ambas. 
+
+**Medidas de tendencia central**
+
+```{r}
+#Para la clase modal
+moda_nmhc <- clase_modal(tabla_nmhc)
+moda_nmhc_r <- clase_modal(tabla_nmhc_r)
+print(paste("Clase modal del sensor: ", moda_nmhc, "Clase modal de referencia: ", moda_nmhc_r))
+```
+
+El sensor reporta la mayor densidad de registros para el quinto intervalo que se encuentra entre (816.2934,925.5124] unidades,  mientras que la estación de referencia arroja que el primer intervalo, que corresponde a concentraciones de entre (6.93,106.4267] µg/m^3, es el de mayor densidad.
+ 
+
+```{r}
+#Para el promedio
+promedio_nmhc <- calcular_promedio("NMHC")
+promedio_nmhc_r <- calcular_promedio("NMHC_r")
+print(paste("Promedio sensor: ", promedio_nmhc, "Promedio referencia: ", promedio_nmhc_r))
+```
+
+Si tomamos el promedio como el valor esperado de la concentración de CO en el aire, este rondaría las 1000 unidades en el sensor y 218.81 µg/m^3 según la estación de referencia. 
+
+```{r}
+#Cuartiles y diagrama y caja y brazos del sensor 
+quant_nmhc <- cuartiles("NMHC")
+print(quant_nmhc)
+boxplot(datos_1$NMHC[datos_1$NMHC != 0],horizontal=T,col="#b2d8b2", xlab = "NMHC ",main="Concentración de Hidrocarburos No Metánicos (sensor)")
+```
+
+Aquí podemos notar que la mitad de las observaciones registraron concentraciones por encima de las 909 unidades, con una notable cantidad de valores atípicos por encima de las 1700 unidades aproximadamente. 
+
+```{r}
+#Cuartiles y diagrama de caja y brazos de referencia
+quant_nmhc_r <- cuartiles("NMHC_r")
+print(quant_nmhc_r)
+boxplot(datos_1$NMHC_r[datos_1$NMHC_r != 0],horizontal=T,col="#b2d8b2", xlab = "NMHC (µg/m^3) ",main="Concentración de Hidrocarburos No Metánicos (referencia)")
+```
+
+La estación de referencia por su parte concentra el 50% de los registros en valores por encima de los 150 µg/m^3, con valores atípicos que llegan a superar los 600 µg/m^3. 
+
+
+
+### Concentración de Óxidos de Nitrógeno (NOx) en la atmósfera. 
+
+Obtenemos las tablas de frecuencia. 
+```{r}
+rango_nox <- range(datos_1$"NOx"[datos_0$"NOx" != 0])
+rango_nox_r <- range(datos_1$"NOx_r"[datos_0$"NOx_r" != 0])
+tabla_nox <- generar_tabla("NOx", 11)
+tabla_nox_r <- generar_tabla("NOx_r", 14)
+#Datos del sensor
+tabla_nox
+#Mostramos los datos para las lecturas de referencia
+tabla_nox_r
+```
+
+```{r}
+#Para mostrar los histogramas
+#Del sensor
+hist(datos_1$NOx[datos_1$NOx != 0], col="#f5b0b0", main="Concentración de NOx en la atmósfera (sensor)", xlab = "NOx", prob=F)
+```
+
+El histograma del sensor se encuentra sesgado hacia la derecha, con la mayoría de los registros arrojando concentraciones por debajo de las 1000 unidades. 
+
+```{r}
+#De referencia
+hist(datos_1$NOx_r[datos_1$NOx_r != 0], col="#f5b0b0", main="Concentración de NOx en la atmósfera (referencia)", xlab = "NOX (ppb)", prob=F)
+
+```
+
+En el caso de la estación de referencia, el histograma muestra que la gran mayoria de registros no pasan de las 500 ppb (parts per billion). 
+
+
+```{r}
+#Generamos la gráfica de dispersión para los datos del sensor vs el la estación de referencia. 
+plot(datos_1$NOx_r[datos_1$NOx != 0 & datos_1$NOx_r != 0], datos_1$NOx[datos_1$NOx != 0 & datos_1$NOx_r != 0], xlab = "Lecturas de referencia (ppb)", ylab = "Lecturas del sensor (unidades desconocidas)", col = "#f5b0b0")
+#Calculamos el coeficiente de correlación. 
+print(coeficiente_corr("NOx_r", "NOx"))
+```
+
+La relación para estos datos tampoco muestra un comportamiento lineal. De hecho, por la forma que tiene la dispersión de los datos pareciera que se trata de una exponencial negativa, comportamiento que se mantiene en todos los rangos de valores con pocos valores atípicos en la parte superior de la gráfica. 
+
+**Medias de tendencia central**
+
+```{r}
+#Para la clase modal
+moda_nox <- clase_modal(tabla_nox)
+moda_nox_r <- clase_modal(tabla_nox_r)
+print(paste("Clase modal del sensor: ", moda_nox, "Clase modal de referencia: ", moda_nox_r))
+```
+
+El sensor reporta una mayor densidad de registros para el tercer intervalo que se encuentra entre (753.4705,970.8157] unidades. Mientras que en la estación de referencia el intervalo más denso es el segundo: (108.5379,215.0957] ppb. 
+
+```{r}
+#Para el promedio
+promedio_nox <- calcular_promedio("NOx")
+promedio_nox_r <- calcular_promedio("NOx_r")
+print(paste("Promedio sensor: ", promedio_nox, "Promedio referencia: ", promedio_nox_r))
+```
+
+Es interesante que en este caso, a diferencia del resto de los sensores, los datos tanto del sensor como de la estación se mantienen en términos generales dentro del mismo orden de magnitud. Si bien los datos difieren, la diferencia no es tan acentuada como en los otros casos. Esto lo podemos apreciar también con el promedio, para el cuál se obtuvo 835.37 unidades para el sensor y 246.88 (ppb) para la estación de referencia.
+
+```{r}
+#Cuártiles y diagrama de caja y brazos del sensor
+quant_nox <- cuartiles("NOx")
+print(quant_nox)
+boxplot(datos_1$NOx[datos_1$NOx != 0],horizontal=T,col="#f5b0b0", xlab = "NOx ",main="Concentración de Oxídos de Nitrógeno (sensor)")
+```
+
+Con este diagrama confirmamos que la mitad de los registros son superiores a las 805.5 unidades para el sensor, con una cantidad notable de registros atípicos por encima de las 1500 unidades. 
+
+```{r}
+#Cuartiles y diagrama de caja y brazos de referencia. 
+quant_nox_r <- cuartiles("NOx_r")
+print(quant_nox_r)
+boxplot(datos_1$NOx_r[datos_1$NOx_r != 0],horizontal=T,col="#f5b0b0", xlab = "NOx (ppb) ",main="Concentración de NOx (referencia)")
+
+```
+
+También para la estación de referencia, el diagrama de caja y brazos nos brinda otra confirmación visual de que la mitad de las leturas son mayores a 179.8 ppb y nos permite hacernos a una idea de la cantidad de lecturas atípicas por encima de las 1000 unides que son, si bien minoria, lo suficientemente densas como para ser notadas. 
+
+
+### Concentración de Dióxido de Nitrogeno (NO2) en la atmósfera
+Para los datos del sensor:
+```{r}
+rango_no2 <- range(datos_1$"NO2"[datos_0$"NO2" != 0])
+rango_no2_r <- range(datos_1$"NO2_r"[datos_0$"NO2_r" != 0])
+tabla_no2 <- generar_tabla("NO2", 12)
+tabla_no2_r <- generar_tabla("NO2_r", 17)
+#Datos del sensor
+tabla_no2
+#Mostramos los datos para las lecturas de referencia
+tabla_no2_r
+```
+
+
+```{r}
+#Para mostrar los histogramas
+#Del sensor
+hist(datos_1$NO2[datos_1$NO2 != 0], col="#fde2a7", main="Concentración de NO2 en la atmósfera (sensor)", xlab = "NO2", prob=F)
+
+```
+
+De todos los datos que hemos analizado, estos son los que tienen la distribución que más se parece a los de una distribución normal. Aún así, los datos están ligeramente más dispersos hacia la derecha.
+
+```{r}
+#De referencia
+hist(datos_1$NO2_r[datos_1$NO2_r != 0], col="#fde2a7", main="Concentración de NO2 en la atmósfera (referencia)", xlab = "NO2 (µg/m^3)", prob=F)
+
+```
+
+Los datos de referencia por su parte muestran un notable sesgo hacia la derecha. Y si los comparamos con los del sensor, nuevamente nos encontramos con el problema de las unidades sobre el que hemos hecho tanto hincapié. 
+
+```{r}
+#Generamos la gráfica de dispersión para los datos del sensor vs el la estación de referencia. 
+plot(datos_1$NO2_r[datos_1$NO2 != 0 & datos_1$NO2_r != 0], datos_1$NO2[datos_1$NO2 != 0 & datos_1$NO2_r != 0], xlab = "Lecturas de referencia (µg/m^3)", ylab = "Lecturas del sensor (unidades desconocidas)", col = "#fde2a7")
+#Calculamos el coeficiente de correlación. 
+print(coeficiente_corr("NO2_r", "NO2"))
+
+```
+
+Lo interesante aquí es que parece no existir una correlación entre ambas lecturas. Y es interesante por distintas razones: 
+
+* Primero que nada, esto es un importante indicador de que probablemente el sensor dedicado a la lectura de Dióxido de Nitrógeno no está funcionando adecuadamente, lo cual evidentemente es problemático ya que la información que reporta podría no tener utilidad científica.
+* Segundo, sabemos que una condición para poder usar el coeficiente de relación de Pearson es que los datos sigan una distribución normal. De todos los datos con los que trabajamos, estos que corresponden a las lecturas de NO2 (tanto del sensor como de la estación de referencia) son los que tienen un histograma más _parecido_ al de una distribución normal, por lo que la falta de una relación lineal entre las lecturas de este sensor quizá nos dice más que en aquellas en las que sí existe una. 
+* Y tercero, a diferencia de los otros tres sensores, en este no existe ningun rango en donde podamos apreciar un comportamiento _correcto_ al compararlo con las lecturas de la estación de referencia. Al menos no con el método que aquí utilizamos. 
+
+De todo ello podemos sugerir que es importante evaluar con más cuidado el comportamiento del sensor para Dióxido de Nitrógeno, pues puede que el dipositivo no funcione o sea tan inestable que necesite ser constantemente calibrado para operar correctamente. 
+
+
+**Medidas de tendencia central**
+```{r}
+#Para la clase modal
+moda_no2 <- clase_modal(tabla_no2)
+moda_no2_r <- clase_modal(tabla_no2_r)
+print(paste("Clase modal del sensor: ", moda_no2, "Clase modal de referencia: ", moda_no2_r))
+
+```
+
+La clase modal del sensor es el sexto intervalo: (1486.015,1674.12] unidades.  
+La clase modal de referencia es también el sexto intervalo, pero que abarca valores de: (102.31,122.37] µg/m^3
+
+```{r}
+#Para el promedio
+promedio_no2 <- calcular_promedio("NO2")
+promedio_no2_r <- calcular_promedio("NO2_r")
+print(paste("Promedio sensor: ", promedio_no2, "Promedio referencia: ", promedio_no2_r))
+
+```
+
+La estación de referencia reportó lecturas promedio de 113.07 µg/m^3 de Dióxido de Carbono. El sensor por su parte reportó un promedio de 1456.14 unidades. Nuevamente, debido al aparente problema de correlación con ambas lecturas sumado a la cuestión de las unidades, es complicado obtener información relevante sólo de los datos del sensor. 
+
+```{r}
+#Cuartiles y diagrama de caja y brazos del sensor
+quant_no2 <- cuartiles("NO2")
+print(quant_no2)
+boxplot(datos_1$NO2[datos_1$NO2 != 0],horizontal=T,col="#fde2a7", xlab = "NO2 ",main="Concentración de Dióxido de Nitrógeno (sensor)")
+```
+
+El sensor arrojó registros por encima de las 1462.75 unidades en el 50% de los casos, con valores atípicos por encima de las 2500 unidades. 
+
+```{r}
+#Cuartiles y diagrama de caja y brazos de referencia
+quant_no2_r <- cuartiles("NO2_r")
+print(quant_no2_r)
+boxplot(datos_1$NO2_r[datos_1$NO2_r != 0],horizontal=T,col="#fde2a7", xlab = "NO2 (µg/m^3) ",main="Concentración de Dióxido de Nitrógeno (referencia)")
+```
+
+La estación de referencia nos indica que, durante la duración del experimento, la mitad de las lecturas arrojaron una concentración superior a los µg/m^3 de Dióxido de Nitrógeno en el aire, con valores atípicos que llegaron a superar los 250 µg/m^3.
+
+## Datos temporales. 
+
+
+Si bien en el curso de Astroestadística no abordamos el tema de series de tiempo, considero importante  trabajar con una nueva columna para el análisis más detallado de las mediciones de NMHC, NOx y NO2. En particular, lo que busco es verificar si en algún momento los datos guardan una relación lineal en lugar de la que aparentan tener. Descarto por ahora los registros para CO, pues como vimos anteriormente, estos ya parecen obedecer una relación lineal. 
+
+Creamos pues una nueva columna para nuestro conjunto de datos llamada "Orden", que será una variable ordinal formada por el año y mes del registro en cuestión. 
+
+Primero veamos lo que ocurre con las concentraciones de NMHC. 
+```{r}
+#Añadimos la nueva columna "Orden" como una variable de tipo numérico
+datos_1$Orden <- as.numeric(format(as.Date(datos_1$Fecha), "%Y%m"))
+#Creamos un objeto llamado colores que nos servirá más adelante para pintar las gráficas. 
+colores <- rainbow(length(unique(datos_1$Orden)))
+#Finalmente, generamos nuevamente la gráfica de dispersión pero modificando el color de acuerdo al parámetro Orden
+with(datos_1[datos_1$NMHC != 0 & datos_1$NMHC_r != 0, ], 
+     plot(NMHC_r, NMHC, xlab = "Lecturas de referencia (µg/m^3)", ylab = "Lecturas del sensor (unidades desconocidas)", 
+          col = colores[match(Orden, unique(Orden))]))
+#Mostramos la escala de colores para Orden
+legend("topright", legend = levels(as.factor(datos_1$Orden)), col = colores, pch = 1)
+```
+
+Nuestra gráfica mueestra que únicamente existen registros útiles para los dos primeros meses de duración del experimento. Veamos cuantos datos le hacen falta a cada columna. 
+
+```{r}
+print(paste("NMHC faltantes: ", length(datos_1$NMHC[datos_1$NMHC == 0]), "| NMHC_r faltantes: ", length(datos_1$NMHC_r[datos_1$NMHC_r == 0])))
+```
+
+Es decir, nuestra estación de referencia no tiene registros para Hidrocarburos No Metánicos en la gran mayoría de las lecturas realizadas. Esto es importante. 
+Una parte fundamental del análisis que realizamos es que partimos del hecho de que las lecturas de la estación de referencia las estamos tomando como las lecturas _verdaderas_ de dicha sustancia en el aire, por lo que si no se tienen registros en la gran mayoría de los datos, puede que estén ocurriendo 2 cosas: O bien, durante la mayor parte de los 13 meses que se realizó el experimento no se tuvieron concentraciones detectables de Hidrocarburos no Metánicos en esta ciudad, o algo ocurrió en la estación de referencia que después del segundo mes se dejaron de reportar las concentraciones de estas sustancias en el aire. A falta de más información, lo único que podemos concluir es que durante los primeros dos meses del experimento, la relación entre las lecturas de referencia y las del sensor parece ser logarítmica. 
+
+
+Ahora veamos lo que ocurre para NOx:
+```{r}
+with(datos_1[datos_1$NOx != 0 & datos_1$NOx_r != 0, ], 
+     plot(NOx_r, NOx, xlab = "Lecturas de referencia (ppb)", ylab = "Lecturas del sensor (unidades desconocidas)", 
+          col = colores[match(Orden, unique(Orden))]))
+legend("topright", legend = levels(as.factor(datos_1$Orden)), col = colores, pch = 1)
+```
+
+Esto también es interesante, pues muestra que la relación si parece tener la forma de una exponencial negativa, sin importar cuándo se obtuvieron los datos, por lo que el comportamiento del sensor parece ser constante. Esto puede indicar que el sensor, de funcionar correctamente, no necesitaría mantenimiento tan constantemente. 
+
+
+Y finalmente, revisemos nuevamente el caso aparentemente problemático de NO2: 
+
+```{r}
+with(datos_1[datos_1$NO2 != 0 & datos_1$NO2_r != 0, ], 
+     plot(NO2_r, NO2, xlab = "Lecturas de referencia (µg/m^3)", ylab = "Lecturas del sensor (unidades desconocidas)", 
+          col = colores[match(Orden, unique(Orden))]))
+legend("topright", legend = levels(as.factor(datos_1$Orden)), col = colores, pch = 1)
+```
+
+Esto ya nos brinda información más interesante sobre el comportamiento del sensor. Ahora si es posible discernir cierta relación entre los datos, pero no es muy claro de que tipo. Además, la relación parece cambiar con el tiempo. Veamos el coeficiente de correlación y el comportamiento de la gráfica de dispersión para cada mes:
+
+```{r}
+#Creamos un vector que tenga los valores únicos de Orden
+
+intervalos = unique(datos_1$Orden)
+contador_aux = 1
+for (i in intervalos){
+  print(paste("Correlación para", i,cor(datos_1$NO2_r[datos_1$NO2 != 0 & datos_1$NO2_r != 0 & datos_1$Orden == i], datos_1$NO2[datos_1$NO2 != 0 & datos_1$NO2_r != 0 & datos_1$Orden == i])))
+  plot(datos_1$NO2_r[datos_1$NO2 != 0 & datos_1$NO2_r != 0 & datos_1$Orden == i], datos_1$NO2[datos_1$NO2 != 0 & datos_1$NO2_r != 0 & datos_1$Orden == i], col = colores[contador_aux], main = i, xlab = "Lecturas de referencia (µg/m^3)", ylab = "Lecturas del sensor (unidades desconocidas)")
+  contador_aux = contador_aux + 1
+}
+#print(cor(datos_1$NO2_r[datos_1$Orden == 200411], datos_1$NO2[datos_1$Orden == 200411]))
+```
+
+
+Reitero nuevamente que el objetivo de este proceso no es hacer un análisis exhaustivo de la evolución temporal de las medidas del sensor para NO2, pero al hacer este desglose para cada mes podemos observar que, a diferencia de la primer impresión que nos dieron los datos, sí es posible sacar información útil de la comparación entre las lecturas del sensor y la estación de referencia. Efectivamente existe una correlación, que parece ser lineal al principio, pero esta _cambia_ con el tiempo, pues en los últimos meses parece más de tipo exponencial ¿A qué se debe esto? Mi recomendación es que habría que hacer un análisis más exhaustivo del sensor dedicado a medir NO2 por separado, pues su comportamiento aparenta ser, si bien atípico, perfectamente estudiable. Por cuestiones prácticas y de alcance, no realizaremos dicho análisis dentro este proyecto, pero podemos descartar con seguridad que la información brindada por el sensor no tenga utilidad, como quizá pudo suponerse en un inicio. 
+
+
+
+## Reflexiones finales 
+
+#### Adquisición de los datos
+
+__* ¿Qué tipos de datos se necesitaron?__
+
+*Las concentraciones para cada tipo de sustancia (CO, NMHC, NOx y NO2) tanto del sensor como de la estación de referencia y el mes y año de cada registro.*
+
+
+__* ¿De dónde se obtuvieron los datos?__
+
+*https://archive.ics.uci.edu/ml/datasets/Air+quality* [1] *, que forma parte del catálogo de datasets que nos fueron compartidos durante la Fase 1.*
+
+
+__* ¿Los datos son adecuados para responder la pregunta de investigación? __
+
+*No en todos los casos. Originalmente una de mis metas fue verificar si era posible "predecir" el clima en base a los datos de los días anteriores, pero cuándo propuse eso desconocía que para lograrlo quizá era necesario utilizar temas fuera del alcance de este curso, como las series de tiempo, pues al final las lecturas van evoluciando con el tiempo y se tienen registros de cada hora en un periodo de 390 días.*  
+
+
+#### Comprensión de los datos
+
+__* ¿Qué atributos (columnas) parecen más prometedores?__
+
+*Las columas anteriormente mencionadas: Las concentraciones para cada tipo de sustancia (CO, NMHC, NOx y NO2) tanto del sensor como de la estación de referencia y la columna "Fecha"*
+
+__* ¿Qué atributos parecen irrelevantes y, en consecuencia, ser excluidos?__
+
+*La temperatura, humedad absoluta, humedad relativa, hora, lectura de Benceno del sensor y lectura de C6H6 de referencia. *
+
+__* ¿Hay datos suficientes para sacar conclusiones generalizables o hacer predicciones precisas?__
+
+*No, con el análisis que realicé me he dado cuenta que a información como el promedio o la clase modal poca información le puedo sacar más allá de reportar las cantidades correspondientes, pues para saber exactamente __qué__ me dice ese número, debería tener una comparación con la cuál sea más factible hacerme una idea de su magnitud. Por ejemplo, es bien sabido que la ciudad de México es un lugar muy contaminado, si tuviera una fuente de información confiable que me permita comparar los datos que se obtuvieron en este expermiento con respecto a lo que solemos tener en la ciudad de México en un día promedio, sería más sencillo pintarse una idea general de qué tan contaminada estaba esta ciudad italiana en la que se realizó el expermiento, o lo contrario, qué tan contaminado está el aire en la CDMX a comparación de esta ciudad italiana. Respecto al punto de comparar la calidad del sensor, creo que con los datos que aquí se incluyen se pueden sacar concluisiones muy interesates sobre el comportamiento y la fiabilidad del dispositivo multisensorial, sin embargo, considero que como en todo experimento científico que involucre  cualquier tipo de instrumentación, hace falta información respecto a la incertidumbre de los datos de referencia y del dispositico multisensorial.*
+
+__* ¿Crees que hay suficientes atributos para realizar un modelo matemático que sea fácil de interpretar?__
+
+*Depende, si sólo buscamos evaluar el desempeño del dispositivo multisensorial, creo que si es factible. Si buscamos sacar conclusiones o tomar decisiones sobre la calidad del aire, hace falta más información. Por ejemplo ¿Cuáles son los límites permitidos en el aire de cierta sustancia de acuerdo a alguna organización o entidad confiable en materia de ecología y salud? Se me ocurre que, de acuerdo a ello, se podría crear incluso una nueva columna de tipo nominal que clasifique a los registros en "seguros" o "potencialmente peligrosos", por poner un ejemplo. *
+
+
+
+__* ¿Se están fusionando varias fuentes de datos? Si es así, ¿cuáles problemas crees que podrían darse?__
+
+*No, todas las conclusiones y el análisis que aquí he realizado fue hecho únicamente con la información disponible en este conjunto de datos*
+
+
+
+__* ¿Hay algún plan para manejar los valores atípicos y/o faltantes?__
+
+*Sí, originalmente los datos faltantes se marcaban con "-200", pero como se trata de concentraciones de una sustancia en el aire, no tiene sentido hablar de concentraciones "negativas", por lo que fueron sustituidas por 0. Esto no necesariamente quiere decir que la concentración de la sustancia para esa lectura en particular fue de 0, sino que no se tiene un registro con el cual se pueda operar. Como estamos interesados en evaluar el comportamiento de una serie de sensores, no tomamos en cuenta aquellos valores en los cuales se reporta una lectura de cero (después de todo, un sensor puede ser perfectamente calibrado en un espectro de valores donde se registren lecturas que puedan ser comparadas con otro de referencia, como las que este dataset ya incluye). Si nos fijamos en los rangos de valores de todas las variables, la lectura más pequeña posible es de  0.1 mg/m^3, que corresponde al valor mínimo de CO detectado por la estación de referencia. Creo que se cuenta con un espectro de sensibilidad lo suficientemente amplio como para poder sacar conclusiones interesantes sin tomar en cuenta los valores igual a cero.*
+
+
+
+
+## Referencias 
+
+[1] S. De Vito, E. Massera, M. Piga, L. Martinotto, G. Di Francia, On field calibration of an electronic nose for benzene estimation in an urban pollution monitoring scenario, Sensors and Actuators B: Chemical, Volume 129, Issue 2, 22 February 2008, Pages 750-757, ISSN 0925-4005, [https://archive.ics.uci.edu/ml/datasets/Air+quality].
